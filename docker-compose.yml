@@ -1,0 +1,74 @@
+name: vellum
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: vellum
+      POSTGRES_PASSWORD: vellum
+      POSTGRES_DB: vellum
+    ports:
+      - "5432:5432"
+    volumes:
+      - vellum-db:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vellum -d vellum"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Lightweight S3-compatible emulator for local development. Production uses
+  # AWS S3, Cloudflare R2, GCS interoperability, MinIO, or another S3 provider.
+  # The bucket is created on startup; no manual mc/aws CLI step is needed.
+  s3mock:
+    image: adobe/s3mock:latest
+    restart: unless-stopped
+    environment:
+      COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: vellum-exports
+      COM_ADOBE_TESTING_S3MOCK_STORE_ROOT: /s3mockroot
+      COM_ADOBE_TESTING_S3MOCK_STORE_RETAIN_FILES_ON_EXIT: "true"
+    ports:
+      - "9090:9090"
+    volumes:
+      - vellum-s3:/s3mockroot
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/favicon.ico"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    profiles: ["full"]
+    image: vellum:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      s3mock:
+        condition: service_healthy
+    environment:
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      DATABASE_URL: postgresql://vellum:vellum@db:5432/vellum
+      DATABASE_SSL: "false"
+      SESSION_COOKIE_NAME: vellum_session
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-20b}
+      S3_BUCKET: vellum-exports
+      S3_REGION: us-east-1
+      S3_ENDPOINT: http://s3mock:9090
+      S3_PUBLIC_ENDPOINT: http://localhost:9090
+      S3_ACCESS_KEY_ID: test
+      S3_SECRET_ACCESS_KEY: test
+      S3_FORCE_PATH_STYLE: "true"
+      CHROME_EXECUTABLE_PATH: /usr/bin/chromium
+    ports:
+      - "3000:3000"
+
+volumes:
+  vellum-db:
+  vellum-s3:
