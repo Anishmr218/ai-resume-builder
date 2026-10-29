@@ -1,34 +1,52 @@
 name: vellum
 
+# Standard deployment:
+#   cp .env.example .env   # then edit APP_URL, S3_PUBLIC_ENDPOINT, GROQ_API_KEY
+#   docker compose up -d --build
+#
+# `docker compose up -d` starts db, s3mock, migrate, and app. The one-shot
+# `migrate` service applies schema.sql and must finish successfully before the
+# app container is allowed to start.
+
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: vellum
-      POSTGRES_PASSWORD: vellum
-      POSTGRES_DB: vellum
+      POSTGRES_USER: ${POSTGRES_USER:-vellum}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vellum}
+      POSTGRES_DB: ${POSTGRES_DB:-vellum}
     ports:
-      - "5432:5432"
+      # Bound to the host loopback only. The app reaches Postgres over the
+      # internal Compose network; use an SSH tunnel for admin access.
+      - "127.0.0.1:5432:5432"
     volumes:
       - vellum-db:/var/lib/postgresql/data
       - ./schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vellum -d vellum"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-vellum} -d ${POSTGRES_DB:-vellum}",
+        ]
       interval: 5s
       timeout: 3s
-      retries: 20
+      retries: 30
+      start_period: 10s
+    shm_size: "128mb"
 
-  # Lightweight S3-compatible emulator for local development. Production uses
-  # AWS S3, Cloudflare R2, GCS interoperability, MinIO, or another S3 provider.
-  # The bucket is created on startup; no manual mc/aws CLI step is needed.
+  # Lightweight S3-compatible emulator for single-host deployments. The bucket
+  # is created on startup. For durable production storage use real S3/R2/MinIO
+  # and point S3_* at it instead.
   s3mock:
     image: adobe/s3mock:latest
     restart: unless-stopped
     environment:
-      COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: vellum-exports
+      COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: ${S3_BUCKET:-vellum-exports}
       COM_ADOBE_TESTING_S3MOCK_STORE_ROOT: /s3mockroot
       COM_ADOBE_TESTING_S3MOCK_STORE_RETAIN_FILES_ON_EXIT: "true"
+      # Keep the JVM heap small on a 1 GB EC2 instance.
+      JAVA_TOOL_OPTIONS: "-Xmx256m"
     ports:
       - "9090:9090"
     volumes:
@@ -37,10 +55,29 @@ services:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/favicon.ico"]
       interval: 5s
       timeout: 3s
-      retries: 20
+      retries: 30
+      start_period: 20s
+
+  # One-shot schema migration. `schema.sql` is idempotent, so this is safe on
+  # every deploy and on an existing volume. The app waits for this to exit 0.
+  migrate:
+    image: postgres:16-alpine
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://vellum:vellum@db:5432/vellum}
+    volumes:
+      - ./schema.sql:/schema.sql:ro
+    command:
+      [
+        "sh",
+        "-c",
+        "psql \"$$DATABASE_URL\" -v ON_ERROR_STOP=1 -f /schema.sql",
+      ]
 
   app:
-    profiles: ["full"]
     image: vellum:latest
     build:
       context: .
@@ -51,23 +88,32 @@ services:
         condition: service_healthy
       s3mock:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
+      NODE_ENV: production
       APP_URL: ${APP_URL:-http://localhost:3000}
-      DATABASE_URL: postgresql://vellum:vellum@db:5432/vellum
-      DATABASE_SSL: "false"
-      SESSION_COOKIE_NAME: vellum_session
+      # Internal origin used by the headless PDF renderer. Keeping this on the
+      # container loopback avoids EC2 security-group hairpin issues.
+      PDF_BASE_URL: ${PDF_BASE_URL:-http://127.0.0.1:3000}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://vellum:vellum@db:5432/vellum}
+      DATABASE_SSL: ${DATABASE_SSL:-false}
+      DB_POOL_MAX: ${DB_POOL_MAX:-5}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-vellum_session}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-20b}
-      S3_BUCKET: vellum-exports
-      S3_REGION: us-east-1
-      S3_ENDPOINT: http://s3mock:9090
-      S3_PUBLIC_ENDPOINT: http://localhost:9090
-      S3_ACCESS_KEY_ID: test
-      S3_SECRET_ACCESS_KEY: test
-      S3_FORCE_PATH_STYLE: "true"
+      S3_BUCKET: ${S3_BUCKET:-vellum-exports}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://s3mock:9090}
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9090}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-test}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-test}
+      S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
       CHROME_EXECUTABLE_PATH: /usr/bin/chromium
     ports:
       - "3000:3000"
+    # Chromium uses /dev/shm; the default 64 MB is too small for PDF export.
+    shm_size: "256mb"
 
 volumes:
   vellum-db:

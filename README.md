@@ -127,20 +127,23 @@ curl -s http://localhost:3000/api/health | jq
 ### Option C — the whole app in Docker
 
 ```bash
-docker compose --profile full up --build
+cp .env.example .env    # set APP_URL, S3_PUBLIC_ENDPOINT, GROQ_API_KEY
+docker compose up -d --build
 ```
 
-Open <http://localhost:3000>. This builds the production image (including Chromium), starts PostgreSQL and S3Mock, waits for both to be healthy, and runs the standalone Next.js server.
+Open <http://localhost:3000>. This builds the production image (including Chromium), starts PostgreSQL, S3Mock, and a one-shot `migrate` service, then starts the standalone Next.js server. The app waits for the database and S3Mock to be healthy and for `schema.sql` to be applied before it accepts traffic.
 
-To enable AI in the full stack, export `GROQ_API_KEY` before starting Compose (or add it to a local `.env` file). Compose forwards it and `GROQ_MODEL` to the app container:
+To enable AI, put `GROQ_API_KEY` (and optionally `GROQ_MODEL`) in `.env`, or export it before starting Compose:
 
 ```bash
-GROQ_API_KEY=your_key docker compose --profile full up --build
+GROQ_API_KEY=your_key docker compose up -d --build
 ```
 
-The app container reaches S3Mock at `http://s3mock:9090`; signed download URLs are rewritten to `http://localhost:9090` through `S3_PUBLIC_ENDPOINT` so the browser can resolve them. If you access the app from another machine, set `APP_URL` and `S3_PUBLIC_ENDPOINT` accordingly before starting Compose.
+The app container reaches S3Mock at `http://s3mock:9090`; signed download URLs use `S3_PUBLIC_ENDPOINT` so the browser can resolve them. When accessing the app from another machine, set `APP_URL` and `S3_PUBLIC_ENDPOINT` to the host's public address.
 
 ```bash
+docker compose ps            # app/db/s3mock healthy, migrate exited 0
+docker compose logs -f app   # startup warnings and request logs
 docker compose down          # keep the database and object-storage volumes
 docker compose down -v       # destructive: delete local data
 ```
@@ -371,7 +374,8 @@ Copy `.env.example` to `.env.local` for development, or set these variables in y
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `APP_URL` | request origin | Public origin used by the PDF renderer to open the print route. Set to the deployed HTTPS origin in production. Must be reachable from the app server and must not be blocked by deployment protection. |
+| `APP_URL` | request origin | Public origin users open in the browser. Used for PDF fallback links and the print view. |
+| `PDF_BASE_URL` | `APP_URL` | Internal origin the headless renderer navigates to. In Docker set `http://127.0.0.1:3000` so PDF export never leaves the container. |
 | `DATABASE_URL` | — | PostgreSQL connection string. Required in production. |
 | `DATABASE_SSL` | `false` | `true` for managed providers that require TLS. |
 | `DATABASE_SSL_REJECT_UNAUTHORIZED` | `true` | Leave `true` unless your provider uses a private CA and you have configured `NODE_EXTRA_CA_CERTS`. |
@@ -519,7 +523,11 @@ The schema targets PostgreSQL 14+ and is managed directly with [`schema.sql`](sc
 
 All resume child rows use `ON DELETE CASCADE`. Indexes cover workspace lookups, child ordering, session expiry, and export history. `updated_at` triggers keep user and resume timestamps accurate.
 
-Apply it to a managed instance:
+`schema.sql` is idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE`, `DROP TRIGGER IF EXISTS`), so it is safe to re-apply on every deploy.
+
+- **Docker Compose:** the one-shot `migrate` service runs it after PostgreSQL is healthy and before the app starts. `docker compose up -d` does this automatically on every start.
+- **Fresh Docker volume:** the Postgres entrypoint also applies it from `/docker-entrypoint-initdb.d/001-schema.sql`.
+- **Managed PostgreSQL:** apply it from a machine with access:
 
 ```bash
 DATABASE_URL='postgresql://…' DATABASE_SSL=true npm run db:migrate
@@ -555,6 +563,86 @@ Important production notes:
 - Allow enough memory and time for Chromium. The PDF routes request `maxDuration = 60`; allocate at least 1 GB of function memory. Cold starts make the first export slower.
 - If the function times out, the UI reports the failure and print view remains available.
 - Keep the bucket private. Add a CORS rule for `GET, HEAD` from your app origin only if you consume signed URLs from client-side JavaScript; normal `<img>` and new-tab downloads do not require it.
+
+### AWS EC2 (Docker Compose, 1 GB)
+
+This is the single-host path: PostgreSQL, S3Mock, schema migration, and the app all run through `docker compose`.
+
+1. Launch an Ubuntu 22.04/24.04 instance (t3.micro is preferable to t2.micro) with at least **20 GB** of EBS storage — the Docker images, build cache, and volumes do not fit comfortably on the 8 GB default. Open these security-group ports:
+   - `22` from your IP only
+   - `3000` from your IP (or `0.0.0.0/0` for a public demo)
+   - `9090` from your IP only (S3Mock signed download URLs; S3Mock is not authenticated)
+   - **Do not open `5432`.** Postgres is bound to `127.0.0.1` and reached over the Compose network.
+
+2. Add swap. A 1 GB instance will otherwise OOM during `next build`:
+
+   ```bash
+   sudo fallocate -l 2G /swapfile
+   sudo chmod 600 /swapfile
+   sudo mkswap /swapfile
+   sudo swapon /swapfile
+   echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+   free -h
+   ```
+
+3. Install Docker Engine and the Compose plugin, then clone the repo:
+
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y docker.io docker-compose-v2 git
+   sudo usermod -aG docker "$USER"   # log out and back in
+   git clone <your-repo-url> vellum && cd vellum
+   ```
+
+4. Create the deployment env file and edit the three required values:
+
+   ```bash
+   cp .env.example .env
+   nano .env
+   ```
+
+   ```dotenv
+   APP_URL=http://<EC2-PUBLIC-IP>:3000
+   S3_PUBLIC_ENDPOINT=http://<EC2-PUBLIC-IP>:9090
+   GROQ_API_KEY=gsk_...
+   GROQ_MODEL=openai/gpt-oss-20b
+   ```
+
+5. Build and start everything:
+
+   ```bash
+   docker compose up -d --build
+   docker compose ps
+   docker compose logs -f app
+   ```
+
+   `db` and `s3mock` become healthy, `migrate` exits `0`, and `app` starts. `docker compose up -d` starts all four services by default — no profile flag is needed.
+
+6. Verify from the instance or your laptop:
+
+   ```bash
+   curl -s http://<EC2-PUBLIC-IP>:3000/api/health | jq
+   ```
+
+   `services.database.status` should be `ok`, `services.storage.provider` should be `s3`, and `services.pdf.status` should be `ok`.
+
+7. To update later:
+
+   ```bash
+   git pull
+   docker compose up -d --build
+   ```
+
+   The `migrate` service re-applies the idempotent schema before the new app container starts.
+
+Notes:
+
+- The app image installs Debian Chromium at `/usr/bin/chromium` and sets `CHROME_EXECUTABLE_PATH`; PDF export works without extra packages.
+- Compose sets `PDF_BASE_URL=http://127.0.0.1:3000`, so PDF rendering does not depend on the public IP being reachable from inside the container.
+- Compose sets `shm_size: 256mb` for the app and the renderer uses `--disable-dev-shm-usage`, so Chromium is stable on small instances.
+- S3Mock is fine for a demo, but its data lives in the `vellum-s3` volume. Use real S3 for durable exports.
+- Plain HTTP works because the session cookie follows `X-Forwarded-Proto` / the request scheme. Put Caddy or nginx in front and terminate TLS when you have a domain.
+- `docker compose down` keeps data; `docker compose down -v` deletes the Postgres and S3 volumes.
 
 ### AWS ECS Fargate
 
@@ -623,6 +711,9 @@ For RDS with a private CA, mount the CA bundle and set `NODE_EXTRA_CA_CERTS=/pat
 The image is self-contained apart from PostgreSQL and object storage:
 
 ```bash
+# Apply the schema first (the Compose stack does this via the migrate service):
+DATABASE_URL='postgresql://…' npm run db:migrate
+
 docker build -t vellum .
 docker run -d \
   --name vellum \

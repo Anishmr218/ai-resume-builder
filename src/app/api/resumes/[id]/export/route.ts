@@ -44,7 +44,9 @@ export async function POST(
     if (!resume) return notFound();
 
     const baseUrl =
-      process.env.APP_URL?.trim() || new URL(request.url).origin;
+      process.env.PDF_BASE_URL?.trim() ||
+      process.env.APP_URL?.trim() ||
+      new URL(request.url).origin;
     const sessionToken = await readSessionToken(request);
 
     let pdf: Buffer;

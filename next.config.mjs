@@ -7,9 +7,10 @@ const nextConfig = {
   // Keep build tracing inside this project when a nested clone also has a
   // package-lock.json.
   outputFileTracingRoot: process.cwd(),
-  // Keep lint scoped to this project. The nested `deployment/` directory is a
-  // separate clone with its own ESLint config.
-  eslint: { dirs: ["src", "tests", "scripts"] },
+  // Skip ESLint inside `next build` to reduce peak memory on 1 GB EC2
+  // instances. Run `npm run lint` separately. `dirs` keeps `next lint` scoped
+  // to this project (the nested `deployment/` clone has its own config).
+  eslint: { ignoreDuringBuilds: true, dirs: ["src", "tests", "scripts"] },
   serverExternalPackages: ["pg", "puppeteer-core", "@sparticuz/chromium"],
   experimental: {
     serverActions: {
