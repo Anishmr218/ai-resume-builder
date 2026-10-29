@@ -16,7 +16,7 @@ export const maxDuration = 60;
 
 export async function POST(request: Request) {
   try {
-    const user = await getSessionUser();
+    const user = await getSessionUser(request);
     if (!user) return unauthorized();
 
     const body = await readJson(request);

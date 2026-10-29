@@ -18,11 +18,11 @@ export const dynamic = "force-dynamic";
 const uuidSchema = z.string().uuid();
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const user = await getSessionUser();
+    const user = await getSessionUser(request);
     if (!user) return unauthorized();
 
     const { id } = await params;
@@ -42,7 +42,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const user = await getSessionUser();
+    const user = await getSessionUser(request);
     if (!user) return unauthorized();
 
     const { id } = await params;
@@ -62,11 +62,11 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const user = await getSessionUser();
+    const user = await getSessionUser(request);
     if (!user) return unauthorized();
 
     const { id } = await params;

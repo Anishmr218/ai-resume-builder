@@ -4,6 +4,9 @@ const nextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
   devIndicators: false,
+  // Keep build tracing inside this project when a parent directory also has a
+  // package-lock.json.
+  outputFileTracingRoot: process.cwd(),
   serverExternalPackages: ["pg", "puppeteer-core", "@sparticuz/chromium"],
   experimental: {
     serverActions: {

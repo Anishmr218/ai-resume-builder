@@ -212,7 +212,8 @@ The connection pool is cached across hot reloads and serverless invocations in a
 Vellum ships with anonymous, cookie-bound workspaces rather than accounts:
 
 - `POST /api/session` creates a 32-byte random token, sets it as an HTTP-only, `SameSite=Lax` cookie, and stores only its SHA-256 hash in `sessions`.
-- The cookie is `Secure` in production, so production must be served over HTTPS.
+- The cookie is marked `Secure` whenever the request is HTTPS (`X-Forwarded-Proto` or the request URL). On a plain-HTTP deployment the cookie is issued without `Secure` so the workspace can still persist; use HTTPS in production.
+- `POST /api/session` also returns the same opaque token in the `X-Vellum-Session` response header. The browser keeps it in per-tab `sessionStorage` and sends it on API calls, so sessions survive proxies or CDNs that strip cookies. The cookie remains the primary credential.
 - Sessions live for 30 days. Expired tokens no longer resolve.
 - Every new workspace receives the sample resume so the editor is immediately useful.
 - All resume reads and writes are scoped to the session's `user_id`, and every route re-checks ownership.
@@ -579,7 +580,7 @@ The Docker image bundles Debian Chromium and runs as a non-root user.
    - Environment: `APP_URL=https://resume.example.com`, `DATABASE_URL` (from Secrets Manager), `DATABASE_SSL=true`, `S3_BUCKET`, `S3_REGION`, `GROQ_API_KEY` (from Secrets Manager), `GROQ_MODEL` (optional), `S3_SERVER_SIDE_ENCRYPTION=AES256` (optional).
    - `CHROME_EXECUTABLE_PATH=/usr/bin/chromium` is already set in the image.
    - Health check: `/api/health` on port `3000`.
-5. Put an ALB or CloudFront in front of the service and terminate TLS. The production session cookie is `Secure`, so plain HTTP will not persist a session.
+5. Put an ALB or CloudFront in front of the service and terminate TLS. Keep `X-Forwarded-Proto` intact so the app marks the session cookie `Secure`. If CloudFront is in front of the ALB, forward cookies (or the `X-Vellum-Session` header) to the origin; the app also accepts the session token in that header when cookies are stripped.
 6. Raise the ALB idle timeout above the PDF timeout (for example, 120 seconds). A 60-second PDF request should not be cut off by the default 60-second idle timeout.
 
 The task is stateless. Run multiple replicas behind the load balancer; sessions, resumes, avatars, and exports all live in PostgreSQL/S3.
@@ -668,7 +669,7 @@ Use managed PostgreSQL backups and point-in-time recovery. Enable S3 versioning 
 Vellum is deliberately **anonymous-first**, not a complete authentication system.
 
 - There is no sign-up, login, email verification, or password reset. A workspace is whoever holds the session cookie.
-- The cookie is HTTP-only, `SameSite=Lax`, `Secure` in production, and only its SHA-256 hash is stored server-side.
+- The cookie is HTTP-only, `SameSite=Lax`, `Secure` on HTTPS requests, and only its SHA-256 hash is stored server-side. The same token is also returned once in the `X-Vellum-Session` header for cookie-less proxies; treat it as a bearer credential.
 - Ownership is enforced on every resume read/write and avatar operation; UUID route params are validated.
 - Zod schemas reject unknown fields and enforce size limits.
 - Avatar uploads are limited to 2 MB and accepted only when magic bytes match PNG, JPEG, or WebP. SVG is rejected.

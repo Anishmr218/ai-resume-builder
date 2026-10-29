@@ -56,7 +56,7 @@ function detectImage(buffer: Buffer): { mime: string; ext: string } | null {
  */
 export async function POST(request: Request) {
   try {
-    const user = await getSessionUser();
+    const user = await getSessionUser(request);
     if (!user) return unauthorized();
 
     let formData: FormData;
@@ -128,9 +128,9 @@ export async function POST(request: Request) {
 }
 
 /** DELETE /api/users/me/avatar — removes the workspace avatar. */
-export async function DELETE() {
+export async function DELETE(request: Request) {
   try {
-    const user = await getSessionUser();
+    const user = await getSessionUser(request);
     if (!user) return unauthorized();
 
     if (user.avatarKey) {

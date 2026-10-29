@@ -4,8 +4,10 @@ import {
   createSessionToken,
   getPublicUser,
   hashSessionToken,
+  isSecureRequest,
   sessionCookieName,
   sessionCookieOptions,
+  SESSION_TOKEN_HEADER,
   SESSION_TTL_SECONDS,
 } from "@/lib/auth";
 import { handleRouteError, noStoreHeaders } from "@/lib/http";
@@ -21,7 +23,7 @@ export const dynamic = "force-dynamic";
  * Bootstraps an anonymous, cookie-bound workspace. A fresh workspace receives
  * a polished sample resume so the editor is immediately useful.
  */
-export async function POST() {
+export async function POST(request: Request) {
   try {
     const store = getStore();
     const cookieStore = await cookies();
@@ -43,7 +45,12 @@ export async function POST() {
           resume,
           isSample,
         };
-        return NextResponse.json(payload, { headers: noStoreHeaders() });
+        return NextResponse.json(payload, {
+          headers: {
+            ...noStoreHeaders(),
+            [SESSION_TOKEN_HEADER]: existingToken,
+          },
+        });
       }
     }
 
@@ -63,9 +70,16 @@ export async function POST() {
     };
 
     const response = NextResponse.json(payload, {
-      headers: noStoreHeaders(),
+      headers: {
+        ...noStoreHeaders(),
+        [SESSION_TOKEN_HEADER]: token,
+      },
     });
-    response.cookies.set(sessionCookieName(), token, sessionCookieOptions());
+    response.cookies.set(
+      sessionCookieName(),
+      token,
+      sessionCookieOptions(isSecureRequest(request)),
+    );
     return response;
   } catch (error) {
     return handleRouteError(error);

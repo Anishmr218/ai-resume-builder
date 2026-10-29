@@ -15,9 +15,9 @@ import { resumeUpdateSchema } from "@/lib/resume/validation";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const user = await getSessionUser();
+    const user = await getSessionUser(request);
     if (!user) return unauthorized();
 
     const resumes = await getStore().listResumes(user.id);
@@ -29,7 +29,7 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    const user = await getSessionUser();
+    const user = await getSessionUser(request);
     if (!user) return unauthorized();
 
     const body = await readJson(request);

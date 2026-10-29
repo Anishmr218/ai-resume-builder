@@ -70,10 +70,39 @@ async function toApiError(response: Response): Promise<ApiRequestError> {
   );
 }
 
+/**
+ * The session cookie is the primary credential. Some hosting setups (a proxy
+ * that drops cookies, or a plain-HTTP origin) prevent it from persisting, so
+ * `/api/session` also returns the same opaque token in this header. Mirror it
+ * in per-tab sessionStorage and send it back on every request.
+ */
+const SESSION_TOKEN_HEADER = "x-vellum-session";
+const SESSION_TOKEN_STORAGE_KEY = "vellum.session.token";
+
+function readStoredSessionToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.sessionStorage.getItem(SESSION_TOKEN_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function storeSessionToken(token: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(SESSION_TOKEN_STORAGE_KEY, token);
+  } catch {
+    // Storage can be unavailable in private browsing modes; the cookie still
+    // works in that case.
+  }
+}
+
 async function request<T>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
+  const sessionToken = readStoredSessionToken();
   let response: Response;
   try {
     response = await fetch(path, {
@@ -84,6 +113,7 @@ async function request<T>(
         ...(init.body && !(init.body instanceof FormData)
           ? { "Content-Type": "application/json" }
           : {}),
+        ...(sessionToken ? { [SESSION_TOKEN_HEADER]: sessionToken } : {}),
         ...init.headers,
       },
     });
@@ -94,6 +124,9 @@ async function request<T>(
       "We couldn't reach the server. Check your connection and try again.",
     );
   }
+
+  const issuedToken = response.headers.get(SESSION_TOKEN_HEADER);
+  if (issuedToken) storeSessionToken(issuedToken);
 
   if (!response.ok) throw await toApiError(response);
   if (response.status === 204) return undefined as T;
@@ -138,12 +171,16 @@ export const api = {
   async downloadPdf(
     id: string,
   ): Promise<{ blob: Blob; fileName: string }> {
+    const sessionToken = readStoredSessionToken();
     let response: Response;
     try {
       response = await fetch(`/api/resumes/${id}/pdf`, {
         method: "POST",
         cache: "no-store",
-        headers: { Accept: "application/pdf" },
+        headers: {
+          Accept: "application/pdf",
+          ...(sessionToken ? { [SESSION_TOKEN_HEADER]: sessionToken } : {}),
+        },
       });
     } catch {
       throw new ApiRequestError(

@@ -30,7 +30,7 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const user = await getSessionUser();
+    const user = await getSessionUser(request);
     if (!user) return unauthorized();
 
     const { id } = await params;
@@ -41,7 +41,7 @@ export async function POST(
 
     const baseUrl =
       process.env.APP_URL?.trim() || new URL(request.url).origin;
-    const sessionToken = await readSessionToken();
+    const sessionToken = await readSessionToken(request);
 
     let pdf: Buffer;
     try {
