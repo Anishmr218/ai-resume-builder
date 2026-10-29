@@ -10,6 +10,9 @@ coverage
 test-results
 playwright-report
 *.log
+# Nested clone of the deployment repo. Next.js would otherwise treat
+# ./deployment as the App Router root and emit routes under /src/app.
+deployment
 Dockerfile
 docker-compose.yml
 README.md

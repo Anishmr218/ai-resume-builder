@@ -27,6 +27,9 @@ coverage
 playwright-report
 test-results
 
+# Nested clone of the deployment repository (has its own .git)
+/deployment/
+
 # Logs
 npm-debug.log*
 yarn-debug.log*

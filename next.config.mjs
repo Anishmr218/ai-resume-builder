@@ -4,9 +4,12 @@ const nextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
   devIndicators: false,
-  // Keep build tracing inside this project when a parent directory also has a
+  // Keep build tracing inside this project when a nested clone also has a
   // package-lock.json.
   outputFileTracingRoot: process.cwd(),
+  // Keep lint scoped to this project. The nested `deployment/` directory is a
+  // separate clone with its own ESLint config.
+  eslint: { dirs: ["src", "tests", "scripts"] },
   serverExternalPackages: ["pg", "puppeteer-core", "@sparticuz/chromium"],
   experimental: {
     serverActions: {
